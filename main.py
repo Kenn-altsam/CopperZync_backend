@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import re
 import json
 from datetime import datetime
+import base64
 
 # Load environment variables from .env file
 load_dotenv()
@@ -33,7 +34,10 @@ if not AZURE_OPENAI_ENDPOINT:
     logger.warning("AZURE_OPENAI_ENDPOINT not found in environment variables")
 
 # Azure OpenAI API URL
-AZURE_OPENAI_API_URL = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version=2024-02-15-preview"
+AZURE_OPENAI_API_URL = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version=2025-01-01-preview"
+
+# Initialize Azure OpenAI client (will be used if needed)
+client = None
 
 # Extract JSON from markdown-style code block
 def extract_json(text):
@@ -267,33 +271,49 @@ async def analyze_coin(image: UploadFile = File(...)):
         }
         
         # Convert image to base64 for OpenAI API
-        import base64
         image_base64 = base64.b64encode(image_data).decode('utf-8')
         
-        payload = {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a professional numismatist and coin expert. Your task is to analyze coin images and provide detailed, accurate information about them. You MUST respond with ONLY valid JSON in the exact format specified. Do not include any explanatory text before or after the JSON. If you cannot determine certain information, use \"unknown\" as the value. Be thorough in your analysis and provide historical context when possible."
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Analyze this coin image and return ONLY a JSON object in this exact format:\n\n{\n  \"year first released\": \"1975\",\n  \"country\": \"USA\",\n  \"denomination\": \"1 cent\",\n  \"value\": \"low collector value\",\n  \"composition\": \"95% copper, 5% zinc\",\n  \"description\": \"This is a Lincoln cent featuring Abraham Lincoln. It has been minted since 1909.\",\n  \"historical_context\": \"Introduced to commemorate Lincoln's 100th birthday...\",\n  \"other_details\": {\n    \"mint_mark\": \"D\",\n    \"rarity\": \"common\",\n    \"diameter_mm\": 19.05\n  }\n}\n\nIMPORTANT: Return ONLY the JSON object. Do not include any markdown formatting, code blocks, or explanatory text. If any field cannot be determined from the image, use \"unknown\" as the value. Ensure all string values are properly quoted."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/{image.content_type.split('/')[-1]};base64,{image_base64}"
-                            }
+        # Create chat prompt with the comprehensive system message from your code
+        chat_prompt = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Analyze an image of a coin and provide detailed information about it following a structured JSON output format.\n\nYour task is to extract and identify relevant information from the image provided, including historical, technical, and value-related details about the coin. The JSON output must strictly adhere to the specified structure and include all fields, even if some values are unknown.\n\n# Steps\n\n1. **Image Analysis**\n   - Examine the image for visual characteristics such as inscriptions, symbols, design elements, and patterns.\n   - Identify visible text, numbers, or symbols to infer the country of origin, denomination, composition, mint mark, and release year.\n\n2. **Infer Historical Context**\n   - Based on the appearance and known symbols, extract the significance of the coin in its national or historical setting.\n   - If possible, describe symbolic representations or notable historical events related to the coin.\n\n3. **Determine Value**\n   - Assess rarity, collector interest, or other factors that may provide insight into the coin's monetary or historical value.\n   - Use contextual clues (e.g., mint mark, visible inscriptions, or styles) to estimate the collector value.\n\n4. **Extract Technical Details**\n   - Note physical specifications such as mint mark, material composition, diameter (in millimeters), and other data inferred from design features.\n\n5. **Compile Metadata**\n   - Add details pertaining to the analysis process, including timestamps, size of the image file, filename, and AI model used.\n\n6. **Present the Data in Predefined JSON Format**\n   - Ensure all fields are included, and default to `\"unknown\"` unless information is reliably inferred.\n\n# Output Format\n\nThe result should adhere strictly to the following JSON structure:\n\n```json\n{\n  \"success\": true,\n  \"timestamp\": \"[ISO 8601 timestamp]\",\n  \"coin_analysis\": {\n    \"basic_info\": {\n      \"released_year\": \"[value or 'unknown']\",\n      \"country\": \"[value or 'unknown']\",\n      \"denomination\": \"[value or 'unknown']\",\n      \"composition\": \"[value or 'unknown']\"\n    },\n    \"value_assessment\": {\n      \"collector_value\": \"[value or 'unknown']\",\n      \"rarity\": \"[value or 'unknown']\"\n    },\n    \"description\": \"[Descriptive narrative relevant to the coin's artistic and symbolic features]\",\n    \"historical_context\": \"[Historical or cultural context relevant to the coin]\",\n    \"technical_details\": {\n      \"mint_mark\": \"[value or 'unknown']\",\n      \"diameter_mm\": \"[value or 'unknown']\",\n      \"composition\": \"[value or 'unknown']\"\n    }\n  },\n  \"metadata\": {\n    \"model_used\": \"[AI model name]\",\n    \"image_filename\": \"[image filename]\",\n    \"image_size_bytes\": \"[size in bytes]\",\n    \"processing_time\": \"[ISO 8601 timestamp]\"\n  }\n}\n```\n\n# Notes\n\n- **Fallback Values**: If information cannot be confidently recovered from the image, provide `\"unknown\"` but apply logical deductions where practical.  \n- **Consistency**: Ensure filenames, file size, and analysis timestamps match the input data provided.  \n- **Attention to Detail**: Provide comprehensive descriptions and avoid overly generic statements in historical and artistic contexts.  \n- **ISO 8601 Compliance**: Ensure all timestamps are in the ISO 8601 format for consistency and standardization."
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "\n"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/{image.content_type.split('/')[-1]};base64,{image_base64}"
                         }
-                    ]
-                }
-            ],
-            "max_tokens": 1000,
-            "temperature": 0.1
+                    },
+                    {
+                        "type": "text",
+                        "text": "\n"
+                    }
+                ]
+            }
+        ]
+        
+        payload = {
+            "messages": chat_prompt,
+            "max_tokens": 6553,
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "stop": None,
+            "stream": False
         }
         
         # Make request to Azure OpenAI
@@ -318,40 +338,75 @@ async def analyze_coin(image: UploadFile = File(...)):
                 raw_analysis = azure_response["choices"][0]["message"]["content"]
                 logger.info(f"Raw GPT response: {raw_analysis[:1000]}...")  # Log first 1000 chars
                 
-                parsed_analysis = extract_json(raw_analysis)
-                logger.info(f"Parsed analysis: {parsed_analysis}")
-                
-                # Create beautiful, structured response
-                beautiful_response = create_beautiful_response(
-                    parsed_analysis, 
-                    AZURE_OPENAI_DEPLOYMENT_NAME, 
-                    image.filename, 
-                    len(image_data)
-                )
-                
-                # If we got mostly "unknown" values, try to extract more information from the raw text
-                if (beautiful_response["coin_analysis"]["basic_info"]["country"] == "unknown" and 
-                    beautiful_response["coin_analysis"]["basic_info"]["denomination"] == "unknown"):
-                    logger.warning("Most fields are unknown, attempting to extract info from raw text")
-                    # Try to extract basic info from the raw text using simple text analysis
-                    enhanced_response = enhance_with_text_analysis(raw_analysis, beautiful_response)
+                # Try to parse the JSON response directly
+                try:
+                    parsed_analysis = json.loads(raw_analysis)
+                    logger.info(f"Parsed analysis: {parsed_analysis}")
+                    
+                    # If the response is already in the correct format, return it
+                    if isinstance(parsed_analysis, dict) and "coin_analysis" in parsed_analysis:
+                        # Update the metadata with current values
+                        parsed_analysis["metadata"]["model_used"] = AZURE_OPENAI_DEPLOYMENT_NAME
+                        parsed_analysis["metadata"]["image_filename"] = image.filename
+                        parsed_analysis["metadata"]["image_size_bytes"] = len(image_data)
+                        parsed_analysis["metadata"]["processing_time"] = datetime.now().isoformat()
+                        parsed_analysis["timestamp"] = datetime.now().isoformat()
+                        
+                        return JSONResponse(
+                            content=parsed_analysis,
+                            status_code=200,
+                            headers={"Content-Type": "application/json"}
+                        )
+                    
+                    # Otherwise, create beautiful, structured response
+                    beautiful_response = create_beautiful_response(
+                        parsed_analysis, 
+                        AZURE_OPENAI_DEPLOYMENT_NAME, 
+                        image.filename, 
+                        len(image_data)
+                    )
+                    
+                    # If we got mostly "unknown" values, try to extract more information from the raw text
+                    if (beautiful_response["coin_analysis"]["basic_info"]["country"] == "unknown" and 
+                        beautiful_response["coin_analysis"]["basic_info"]["denomination"] == "unknown"):
+                        logger.warning("Most fields are unknown, attempting to extract info from raw text")
+                        # Try to extract basic info from the raw text using simple text analysis
+                        enhanced_response = enhance_with_text_analysis(raw_analysis, beautiful_response)
+                        return JSONResponse(
+                            content=enhanced_response,
+                            status_code=200,
+                            headers={"Content-Type": "application/json"}
+                        )
+                    
                     return JSONResponse(
-                        content=enhanced_response,
+                        content=beautiful_response,
                         status_code=200,
                         headers={"Content-Type": "application/json"}
                     )
-                
-                return JSONResponse(
-                    content=beautiful_response,
-                    status_code=200,
-                    headers={"Content-Type": "application/json"}
-                )
+                    
+                except json.JSONDecodeError:
+                    # If direct JSON parsing fails, try to extract JSON from the response
+                    parsed_analysis = extract_json(raw_analysis)
+                    logger.info(f"Extracted analysis: {parsed_analysis}")
+                    
+                    beautiful_response = create_beautiful_response(
+                        parsed_analysis, 
+                        AZURE_OPENAI_DEPLOYMENT_NAME, 
+                        image.filename, 
+                        len(image_data)
+                    )
+                    
+                    return JSONResponse(
+                        content=beautiful_response,
+                        status_code=200,
+                        headers={"Content-Type": "application/json"}
+                    )
             else:
                 raise HTTPException(
                     status_code=500,
                     detail="Unexpected response format from Azure OpenAI"
                 )
-                
+                    
     except httpx.TimeoutException:
         logger.error("Timeout while communicating with Azure OpenAI API")
         raise HTTPException(
@@ -371,7 +426,8 @@ async def health_check():
     return {
         "status": "healthy",
         "azure_openai_configured": bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT),
-        "deployment_name": AZURE_OPENAI_DEPLOYMENT_NAME
+        "deployment_name": AZURE_OPENAI_DEPLOYMENT_NAME,
+        "authentication_method": "API Key"
     }
 
 @app.get("/debug")
@@ -381,6 +437,7 @@ async def debug_info():
         "azure_openai_api_key_set": bool(AZURE_OPENAI_API_KEY),
         "azure_openai_endpoint_set": bool(AZURE_OPENAI_ENDPOINT),
         "azure_openai_deployment_name": AZURE_OPENAI_DEPLOYMENT_NAME,
+        "authentication_method": "API Key",
         "api_url": AZURE_OPENAI_API_URL,
         "environment_variables": {
             "AZURE_OPENAI_API_KEY_length": len(AZURE_OPENAI_API_KEY) if AZURE_OPENAI_API_KEY else 0,
